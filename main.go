@@ -41,7 +41,7 @@ func gpHTTPPostForm(u string, values url.Values) (*http.Response, error) {
 
 // InitPrelogin returns the SAML HTML snippet needed to start the prelogin
 // step.
-func InitPrelogin() (string, error) {
+func InitPrelogin() (string, string, error) {
 	type xmlResponse struct {
 		Status         string `xml:"status"`
 		Region         string `xml:"region"`
@@ -54,30 +54,41 @@ func InitPrelogin() (string, error) {
 	preloginUrl := "https://" + *gatewayUrl + "/ssl-vpn/prelogin.esp?tmp=tmp&kerberos-support=yes&ipv6-support=yes&clientVer=4100&clientos=Linux"
 	err := PostReq(nil, preloginUrl, &response)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if response.Status != "Success" {
-		return "", fmt.Errorf("InitPrelogin: bad status %s", response.Status)
+		return "", "", fmt.Errorf("InitPrelogin: bad status %s", response.Status)
 	}
-	if response.SAMLAuthMethod != "POST" {
-		return "", fmt.Errorf("InitPrelogin: unsupported SAML auth method %s", response.SAMLAuthMethod)
+	if response.SAMLAuthMethod != "POST" && response.SAMLAuthMethod != "REDIRECT" {
+		return "", "", fmt.Errorf("InitPrelogin: unsupported SAML auth method %s", response.SAMLAuthMethod)
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(response.SAMLRequest)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return string(decoded), nil
+	return string(decoded), response.SAMLAuthMethod, nil
 }
 
-func Prelogin(samlPreloginHTML string) (*SAMLPreloginData, error) {
+func Prelogin(samlPreloginHTML string, samlAuthMethod string) (*SAMLPreloginData, error) {
 	os.RemoveAll("./data/Default/Preferences")
-	ui, err := lorca.New(`data:text/html,`+url.PathEscape(samlPreloginHTML), "./data", 500, 800, "--remote-allow-origins=*")
+
+	var urlDest string
+	if samlAuthMethod == "REDIRECT" {
+		urlDest = samlPreloginHTML
+	} else {
+		urlDest = `data:text/html,` + url.PathEscape(samlPreloginHTML)
+	}
+	ui, err := lorca.New(urlDest, "./data", 500, 800, "--remote-allow-origins=*")
 	if err != nil {
 		return nil, err
 	}
 	defer ui.Close()
+
+	if samlAuthMethod == "REDIRECT" {
+		ui.Load(samlPreloginHTML)
+	}
 
 	// A trick to get back the SAML payload we got from the browser response
 	var preloginCookie *SAMLPreloginData
@@ -223,12 +234,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	samlPreloginHTML, err := InitPrelogin()
+	samlPreloginHTML, samlAuthMethod, err := InitPrelogin()
 	if err != nil {
 		log.Fatalf("prelogin initialization failed : %s", err)
 	}
 
-	samlPreloginData, err := Prelogin(samlPreloginHTML)
+	samlPreloginData, err := Prelogin(samlPreloginHTML, samlAuthMethod)
 	if err != nil {
 		log.Fatalf("prelogin flow failed : %s", err)
 	}
